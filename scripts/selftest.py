@@ -22,7 +22,7 @@ def main() -> int:
     steps = [
         ("编译检查", [sys.executable, "-m", "compileall", "-q", "printroom", "tests", "scripts"]),
         ("页面引用检查", [sys.executable, "scripts/check_ui.py"]),
-        ("测试", [sys.executable, "-m", "unittest", "tests.test_printroom"]),
+        ("测试", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]),
     ]
     code = 0
     for label, cmd in steps:

@@ -238,3 +238,21 @@ th { color: var(--muted); font-weight: 600; background: #faf7ef; white-space: no
 td.mono { font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr.scrapped td { color: #8b7a7a; }
 .empty-row { color: var(--muted); text-align: center; padding: 18px; }
+
+.volume-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 860px) { .volume-grid { grid-template-columns: 1fr; } }
+.volume-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.volume-card.active { border-color: var(--accent); background: #f5fbf9; }
+.volume-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.volume-line { display: flex; gap: 8px; align-items: baseline; font-size: 13px; flex-wrap: wrap; }
+.volume-line .muted { min-width: 132px; }
+.volume-line .mono { word-break: break-all; white-space: normal; }
+.warn-text { color: var(--warn); font-size: 13px; font-weight: 600; margin: 4px 0 0; }

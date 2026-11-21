@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -96,7 +97,79 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_in_progress_attempt
 CREATE INDEX IF NOT EXISTS ix_segments_job ON print_segments(job_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_job ON sheet_attempts(job_id);
 CREATE INDEX IF NOT EXISTS ix_attempts_segment ON sheet_attempts(segment_id);
+
+-- 卷级元数据：单行。commit_seq 是已提交状态的单调水位，每次写事务 +1，
+-- 用来核对副本是否落后于源卷；activated_at 标记本卷何时被切换为活动卷。
+CREATE TABLE IF NOT EXISTS volume_meta (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    commit_seq    INTEGER NOT NULL DEFAULT 0,
+    prepared_at   TEXT,
+    activated_at  TEXT
+);
+INSERT OR IGNORE INTO volume_meta(id, commit_seq) VALUES (1, 0);
 """
+
+
+class _RWLock:
+    """写优先的读写锁。
+
+    平时所有数据库访问持共享锁并发执行；卷切换时需要独占锁，把写入
+    （以及读取）短暂拦住，只做水位核对和交接指针翻转。写优先保证切换
+    不会被持续到达的读请求无限推迟。
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writers = 0
+        self._waiting_writers = 0
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._writers or self._waiting_writers:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._waiting_writers += 1
+            try:
+                while self._readers or self._writers:
+                    self._cond.wait()
+                self._writers += 1
+            finally:
+                self._waiting_writers -= 1
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writers -= 1
+            self._cond.notify_all()
+
+    @contextmanager
+    def read_lock(self) -> Iterator[None]:
+        self.acquire_read()
+        try:
+            yield
+        finally:
+            self.release_read()
+
+    @contextmanager
+    def write_lock(self) -> Iterator[None]:
+        self.acquire_write()
+        try:
+            yield
+        finally:
+            self.release_write()
+
+
+# 进程级锁：切换卷时独占，普通请求共享。
+op_lock = _RWLock()
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -125,23 +198,30 @@ def init_db(db_path: str) -> None:
 
 @contextmanager
 def transaction(db_path: str) -> Iterator[sqlite3.Connection]:
-    """写事务；BEGIN IMMEDIATE 让并发请求串行化。"""
-    conn = connect(db_path)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        yield conn
-        conn.execute("COMMIT")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.close()
+    """写事务；BEGIN IMMEDIATE 让并发请求串行化。
+
+    提交前把卷水位 commit_seq +1：任何已提交的业务写入都会推进水位，
+    切换卷时据此判断副本是否落后。持共享锁，使切换能等待在途写事务结束。
+    """
+    with op_lock.read_lock():
+        conn = connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.execute("UPDATE volume_meta SET commit_seq = commit_seq + 1 WHERE id = 1")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
 
 
 @contextmanager
 def reading(db_path: str) -> Iterator[sqlite3.Connection]:
-    conn = connect(db_path)
-    try:
-        yield conn
-    finally:
-        conn.close()
+    with op_lock.read_lock():
+        conn = connect(db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()

@@ -47,8 +47,19 @@
     <div id="jobs" class="jobs"></div>
   </section>
 
+  <section class="panel" id="volume-panel">
+    <h2>④ 数据卷迁移（搬到新的 Docker 卷）</h2>
+    <div id="volume-info" class="volume-info"></div>
+    <p class="hint">
+      先<strong>准备副本</strong>：在线整库复制到新卷，期间录稿、出纸照常；
+      再<strong>确认切换</strong>：系统短暂拦住写入核对提交水位，水位一致才交接。
+      若准备之后源卷又有新提交，确认会被拒绝并提示重新准备，原卷继续服务。
+      切换成功后新请求走新卷，卸下旧卷、重建容器也能接着出纸。
+    </p>
+  </section>
+
   <section class="panel">
-    <h2>④ 出纸记录（用于核对装订页序）</h2>
+    <h2>⑤ 出纸记录（用于核对装订页序）</h2>
     <div class="table-wrap">
       <table>
         <thead>

@@ -6,11 +6,18 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # SQLite 数据放在命名卷里，容器重建后出纸与续印进度不丢。
+      # 源卷：SQLite 作业库所在，容器重建后出纸与续印进度不丢。
       - printroom-data:/app/data
+      # 新卷：网页“准备副本”时整库复制到这里，确认切换后成为活动卷。
+      - printroom-data-new:/app/data-new
     environment:
       PRINTROOM_DB: /app/data/printroom.db
+      # 副本（新卷）数据库路径；不配置则网页不显示迁移入口。
+      PRINTROOM_REPLICA_DB: /app/data-new/printroom.db
+      PRINTROOM_PRIMARY_LABEL: "当前卷 printroom-data"
+      PRINTROOM_REPLICA_LABEL: "新卷 printroom-data-new"
     restart: unless-stopped
 
 volumes:
   printroom-data:
+  printroom-data-new:

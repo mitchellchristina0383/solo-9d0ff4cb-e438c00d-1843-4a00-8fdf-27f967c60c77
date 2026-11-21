@@ -1,0 +1,19 @@
+# 演示“卸下旧卷、重建容器后续印”的叠加配置。
+#
+# 先在网页完成 准备副本 → 确认切换（活动卷已翻到新卷），然后执行：
+#   docker compose -f docker-compose.yml -f docker-compose.rebuild.yml up -d --force-recreate
+# 这会用同一镜像重建容器，且只挂新卷 printroom-data-new；旧卷
+# printroom-data 不再挂载，服务从新卷数据库继续出纸。
+services:
+  printroom:
+    container_name: printroom
+    volumes:
+      - printroom-data-new:/app/data
+    environment:
+      PRINTROOM_DB: /app/data/printroom.db
+      # 重建后没有副本卷：新卷即唯一的数据卷。
+      PRINTROOM_REPLICA_DB: ""
+      PRINTROOM_PRIMARY_LABEL: "新卷 printroom-data-new（重建后挂载为 /app/data）"
+
+volumes:
+  printroom-data-new:

@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-from . import db, service
+from . import db, service, volume
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MAX_BODY = 1024 * 1024
@@ -24,7 +24,11 @@ def _json_bytes(payload: Any) -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PrintRoom/1.0"
-    db_path: str = db.DEFAULT_DB
+
+    @property
+    def db_path(self) -> str:
+        # 活动卷在确认切换后会翻转，每次请求实时取当前路径。
+        return volume.get_manager().active_path
 
     # ------------------------------------------------------------------ 基础
     def _send(self, status: int, body: bytes, content_type: str) -> None:
@@ -74,8 +78,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/healthz":
                 self._json({"ok": True})
                 return
+            if path == "/api/volume":
+                self._json(volume.get_manager().get_info())
+                return
             if path == "/api/state":
-                self._json(service.get_state(self.db_path))
+                state = service.get_state(self.db_path)
+                state["volume"] = volume.get_manager().get_info()
+                self._json(state)
                 return
             m = re.fullmatch(r"/api/jobs/(\d+)", path)
             if m:
@@ -91,6 +100,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"error": "接口不存在", "code": "not_found"}, 404)
         except service.ServiceError as exc:
+            self._error(exc)
+        except volume.VolumeError as exc:
             self._error(exc)
         except Exception as exc:  # pragma: no cover - 兜底
             self.log_message("unhandled error: %r", exc)
@@ -119,12 +130,22 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_post(path, data)
         except service.ServiceError as exc:
             self._error(exc)
+        except volume.VolumeError as exc:
+            self._error(exc)
         except Exception as exc:  # pragma: no cover - 兜底
             self.log_message("unhandled error: %r", exc)
             self._json({"error": "服务器内部错误", "code": "internal"}, 500)
 
     def _dispatch_post(self, path: str, data: dict[str, Any]) -> None:
         dbp = self.db_path
+
+        if path == "/api/volume/prepare":
+            self._json(volume.get_manager().prepare_replica(), 201)
+            return
+
+        if path == "/api/volume/switch":
+            self._json(volume.get_manager().commit_switch())
+            return
 
         def int_field(name: str) -> int:
             value = data.get(name)
@@ -200,13 +221,20 @@ def create_server(
     db_path: str = db.DEFAULT_DB,
     host: str = "0.0.0.0",
     port: int = 8000,
+    replica_path: Optional[str] = None,
+    primary_label: str = "当前卷",
+    replica_label: str = "新卷",
 ) -> ThreadingHTTPServer:
-    db.init_db(db_path)
+    volume.configure(
+        db_path,
+        replica_path,
+        primary_label=primary_label,
+        replica_label=replica_label,
+    )
 
     class BoundHandler(Handler):
         pass
 
-    BoundHandler.db_path = db_path
     httpd = ThreadingHTTPServer((host, port), BoundHandler)
     httpd.daemon_threads = True
     return httpd
@@ -216,8 +244,17 @@ def main() -> None:
     host = os.environ.get("PRINTROOM_HOST", "0.0.0.0")
     port = int(os.environ.get("PRINTROOM_PORT", "8000"))
     db_path = os.environ.get("PRINTROOM_DB", db.DEFAULT_DB)
-    server = create_server(db_path, host, port)
-    print(f"文印室打印队列已启动: http://{host}:{port}/  数据库: {db_path}", flush=True)
+    replica_path = os.environ.get("PRINTROOM_REPLICA_DB") or None
+    server = create_server(
+        db_path,
+        host,
+        port,
+        replica_path=replica_path,
+        primary_label=os.environ.get("PRINTROOM_PRIMARY_LABEL", "当前卷 printroom-data"),
+        replica_label=os.environ.get("PRINTROOM_REPLICA_LABEL", "新卷 printroom-data-new"),
+    )
+    extra = f"  副本卷: {replica_path}" if replica_path else "  （未配置副本卷）"
+    print(f"文印室打印队列已启动: http://{host}:{port}/  数据库: {db_path}{extra}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

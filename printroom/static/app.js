@@ -356,6 +356,104 @@ function renderRecords() {
   }
 }
 
+// ---------------------------------------------------------------- 数据卷迁移
+
+function renderVolume() {
+  const wrap = document.getElementById("volume-info");
+  wrap.replaceChildren();
+  const vol = state.data.volume;
+  if (!vol) {
+    wrap.append(el("p", { class: "muted", text: "卷信息不可用。" }));
+    return;
+  }
+
+  const activeCard = el("div", { class: "volume-card active" });
+  activeCard.append(
+    el("div", { class: "volume-head" },
+      el("b", { text: "当前活动卷" }),
+      badge(vol.switched ? "completed" : "active", vol.switched ? "已切到新卷" : "原卷服务中"),
+    ),
+    el("div", { class: "volume-line" },
+      el("span", { class: "muted", text: "卷名" }), el("b", { text: vol.active_label })),
+    el("div", { class: "volume-line" },
+      el("span", { class: "muted", text: "数据库路径" }),
+      el("span", { class: "mono", text: vol.active_path })),
+    el("div", { class: "volume-line" },
+      el("span", { class: "muted", text: "提交水位 commit_seq" }),
+      el("b", { class: "mono", text: String(vol.active_commit_seq) })),
+  );
+
+  const replicaCard = el("div", { class: "volume-card" });
+  const head = el("div", { class: "volume-head" }, el("b", { text: "新卷副本" }));
+  if (!vol.replica_configured) {
+    head.append(badge("queued", "未配置"));
+    replicaCard.append(head,
+      el("p", { class: "muted", text: "未配置副本卷（环境变量 PRINTROOM_REPLICA_DB）。" }));
+  } else {
+    replicaCard.append(
+      head,
+      el("div", { class: "volume-line" },
+        el("span", { class: "muted", text: "卷名" }), el("b", { text: vol.replica_label })),
+      el("div", { class: "volume-line" },
+        el("span", { class: "muted", text: "数据库路径" }),
+        el("span", { class: "mono", text: vol.replica_path })),
+    );
+    const r = vol.replica;
+    if (!r.available) {
+      head.append(badge("queued", "尚未准备"));
+      replicaCard.append(el("p", { class: "muted", text: "还没有副本，先点“准备副本”做在线整库复制。" }));
+    } else {
+      head.append(badge(r.stale ? "jammed" : "printing", r.stale ? "已落后需重新准备" : "与源卷同水位"));
+      replicaCard.append(
+        el("div", { class: "volume-line" },
+          el("span", { class: "muted", text: "副本提交水位" }),
+          el("b", { class: "mono", text: String(r.commit_seq) })),
+        el("div", { class: "volume-line" },
+          el("span", { class: "muted", text: "准备时间" }),
+          el("span", { text: fmtTime(r.prepared_at) })),
+        el("div", { class: "volume-line" },
+          el("span", { class: "muted", text: "切换时间" }),
+          el("span", { text: r.activated_at ? fmtTime(r.activated_at) : "—" })),
+      );
+      if (r.stale) {
+        replicaCard.append(el("p", { class: "warn-text",
+          text: "源卷在准备之后又有新提交，副本未包含这些提交；请重新准备副本后再确认切换。" }));
+      }
+    }
+  }
+
+  const actions = el("div", { class: "actions" });
+  if (vol.replica_configured && !vol.switched) {
+    actions.append(
+      el("button", { class: "small", type: "button",
+        text: vol.replica.available ? "重新准备副本" : "准备副本",
+        onclick: () => act(async () => {
+          await api("POST", "/api/volume/prepare");
+        }, "副本已准备好：整库快照已复制到新卷，源卷仍在服务") }),
+      el("button", { class: "danger small", type: "button", text: "确认切换到新卷",
+        disabled: vol.replica.available ? null : "",
+        onclick: () => {
+          const ok = window.confirm(
+            "确认切换？系统会短暂拦住写入并核对提交水位；\n"
+            + "若源卷有副本未包含的提交，切换会被拒绝并继续使用原卷。");
+          if (ok) {
+            act(async () => {
+              await api("POST", "/api/volume/switch");
+            }, "已切换到新卷：之后的新请求都走新卷，重建容器也能续印");
+          }
+        } }),
+    );
+  } else if (vol.switched) {
+    actions.append(el("span", { class: "muted",
+      text: "当前已在新卷服务；可卸下旧卷并重建容器，进度在新卷中保留。" }));
+  }
+
+  wrap.append(
+    el("div", { class: "volume-grid" }, activeCard, replicaCard),
+    actions,
+  );
+}
+
 function render() {
   if (!state.data) return;
   if (state.editingDocId !== null) {
@@ -365,6 +463,7 @@ function render() {
   renderDocuments();
   renderPrinters();
   renderJobs();
+  renderVolume();
   renderRecords();
 }
 
